@@ -2,7 +2,7 @@
 
 A cyberpunk TUI for managing SSH local port forwards. Built with [Bubbletea](https://github.com/charmbracelet/bubbletea) + [Lipgloss](https://github.com/charmbracelet/lipgloss).
 
-<!-- ![tunl screenshot](screenshot.png) -->
+<img width="1179" height="839" alt="screenshot" src="https://github.com/user-attachments/assets/3156dbc0-1a91-4228-b24c-ee552aba511d" />
 
 ## Features
 
