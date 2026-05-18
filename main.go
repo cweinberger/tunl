@@ -305,6 +305,24 @@ func (tm *tunnelManager) remove(idx int) error {
 	return nil
 }
 
+func (tm *tunnelManager) revive(idx int) (tunnel, error) {
+	tm.mu.Lock()
+	if idx < 0 || idx >= len(tm.tunnels) {
+		tm.mu.Unlock()
+		return tunnel{}, fmt.Errorf("invalid tunnel index")
+	}
+	t := tm.tunnels[idx]
+	if t.Active {
+		tm.mu.Unlock()
+		return tunnel{}, fmt.Errorf("tunnel is already active")
+	}
+	tm.tunnels = append(tm.tunnels[:idx], tm.tunnels[idx+1:]...)
+	saveState(tm.tunnels)
+	tm.mu.Unlock()
+
+	return tm.add(t.LocalPort, t.RemotePort, t.Host, t.Name)
+}
+
 func (tm *tunnelManager) rename(idx int, name string) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -615,6 +633,17 @@ func addTunnel(mgr *tunnelManager, localPort, remotePort int, host, name string)
 	}
 }
 
+func reviveTunnel(mgr *tunnelManager, idx int) tea.Cmd {
+	return func() tea.Msg {
+		t, err := mgr.revive(idx)
+		if err != nil {
+			return tunnelErrorMsg{err: err}
+		}
+		time.Sleep(500 * time.Millisecond)
+		return tunnelAddedMsg{t: t}
+	}
+}
+
 func autoRefreshTick() tea.Cmd {
 	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
@@ -838,6 +867,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.inputRename.Cursor.BlinkCmd()
 				}
 				return m, nil
+			case "R":
+				vis := m.visibleItems()
+				if m.cursor >= 0 && m.cursor < len(vis) && vis[m.cursor].kind == "tunnel" {
+					idx := vis[m.cursor].tunnelIdx
+					if !m.tunnels[idx].Active {
+						t := m.tunnels[idx]
+						m.status = fmt.Sprintf("Reviving %s → %s…", t.label(), t.Host)
+						m.statusErr = false
+						return m, tea.Batch(m.spinner.Tick, reviveTunnel(m.manager, idx))
+					}
+				}
+				return m, nil
 			case "K":
 				if len(m.tunnels) > 0 {
 					m.manager.removeAll()
@@ -1011,15 +1052,18 @@ func (m model) handleEnter() (tea.Model, tea.Cmd) {
 
 	switch item.kind {
 	case "tunnel":
-		// Open in browser
 		t := m.tunnels[item.tunnelIdx]
 		if t.Active {
+			// Open in browser
 			_ = exec.Command("open", fmt.Sprintf("http://localhost:%d", t.LocalPort)).Start()
 			m.status = fmt.Sprintf("Opened http://localhost:%d", t.LocalPort)
 			m.statusErr = false
 			return m, clearStatusAfter(3 * time.Second)
 		}
-		return m, nil
+		// Dead tunnel — revive it
+		m.status = fmt.Sprintf("Reviving %s → %s…", t.label(), t.Host)
+		m.statusErr = false
+		return m, tea.Batch(m.spinner.Tick, reviveTunnel(m.manager, item.tunnelIdx))
 	case "menu":
 		menus := m.menuItems()
 		if item.menuIdx < 0 || item.menuIdx >= len(menus) {
@@ -1177,7 +1221,10 @@ func (m model) View() string {
 			if t.Active {
 				uptimeInfo = lipgloss.NewStyle().Foreground(colorYellow).Render(fmt.Sprintf("  ⏱ %s", t.uptime()))
 			} else {
-				uptimeInfo = lipgloss.NewStyle().Foreground(colorRed).Render("  ✗ dead")
+				uptimeInfo = lipgloss.NewStyle().Foreground(colorRed).Render("  ✗ dead") +
+					lipgloss.NewStyle().Foreground(colorDim).Render(" (") +
+					lipgloss.NewStyle().Foreground(colorYellow).Render("R") +
+					lipgloss.NewStyle().Foreground(colorDim).Render(" revive)")
 			}
 
 			urlInfo := lipgloss.NewStyle().Foreground(colorCyan).Render(
@@ -1395,6 +1442,8 @@ func (m model) View() string {
 			lipgloss.NewStyle().Foreground(colorDim).Render(" open in browser  ") +
 			lipgloss.NewStyle().Foreground(colorCyan).Render("x") +
 			lipgloss.NewStyle().Foreground(colorDim).Render(" kill  ") +
+			lipgloss.NewStyle().Foreground(colorCyan).Render("R") +
+			lipgloss.NewStyle().Foreground(colorDim).Render(" revive  ") +
 			lipgloss.NewStyle().Foreground(colorCyan).Render("e") +
 			lipgloss.NewStyle().Foreground(colorDim).Render(" rename  ") +
 			lipgloss.NewStyle().Foreground(colorCyan).Render("1-9") +
@@ -1584,6 +1633,7 @@ Controls:
   Enter/o    Open tunnel URL in browser
   n          New tunnel
   e          Rename selected tunnel
+  R          Revive selected dead tunnel
   x          Kill selected tunnel
   K          Kill all tunnels
   r          Refresh (detect existing tunnels)
